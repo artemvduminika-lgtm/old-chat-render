@@ -1,89 +1,116 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Chat</title>
+<meta charset="UTF-8">
+<title>Messenger</title>
+<style>
+body { margin:0; font-family:sans-serif; background:#36393f; color:white; }
+.container { display:flex; height:100vh; }
+.sidebar { width:250px; background:#2f3136; padding:10px; }
+.contact { padding:10px; cursor:pointer; border-radius:5px; display:flex; justify-content:space-between; }
+.contact:hover { background:#40444b; }
+.unread { color:#43b581; }
+.chat { flex:1; display:flex; flex-direction:column; }
+.messages { flex:1; padding:10px; overflow:auto; }
+.input { display:flex; padding:10px; background:#40444b; }
+input { flex:1; padding:10px; border:none; border-radius:5px; }
+</style>
 </head>
 <body>
 
-<h3>Chat</h3>
+<div class="container">
+<div class="sidebar">
+<h3>Contacts</h3>
+<div id="contacts"></div>
+<input id="newContact" placeholder="Add" />
+</div>
 
-<div id="chat" style="height:250px; overflow-y:scroll; border:1px solid black;"></div>
-
-<input id="message" type="text" placeholder="Type message..." />
-<button onclick="sendMessage()">Send</button>
-
-<h4>Online users:</h4>
-<ul id="users"></ul>
+<div class="chat">
+<div id="messages" class="messages"></div>
+<div class="input">
+<input id="msg" placeholder="Message" />
+</div>
+</div>
+</div>
 
 <script>
-    const username = prompt("Your name:");
-    const room = prompt("Room name:", "general");
+const username = prompt("Username:");
+const ws = new WebSocket("ws://192.168.1.106:8765");
 
-    const ws = new WebSocket("ws://localhost:8765");
+let current = null;
+let contactsList = [];
+let unread = {};
 
-    const chat = document.getElementById("chat");
-    const usersList = document.getElementById("users");
+ws.onopen = ()=> ws.send(JSON.stringify({username}));
 
-    ws.onopen = () => {
-        ws.send(JSON.stringify({
-            username: username,
-            room: room
-        }));
-    };
+ws.onmessage = e => {
+    const d = JSON.parse(e.data);
 
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (data.type === "history") {
-            data.messages.forEach(msg => {
-                addMessage(`${msg[0]}: ${msg[1]}`);
-            });
-        }
-
-        if (data.type === "message") {
-            addMessage(`[${data.time}] ${data.user}: ${data.message}`);
-        }
-
-        if (data.type === "system") {
-            addMessage(`[SYSTEM] ${data.message}`);
-        }
-
-        if (data.type === "users") {
-            updateUsers(data.users);
-        }
-    };
-
-    function addMessage(text) {
-        const div = document.createElement("div");
-        div.textContent = text;
-        chat.appendChild(div);
-        chat.scrollTop = chat.scrollHeight;
+    if(d.type === "init"){
+        contactsList = d.contacts;
+        d.unread.forEach(u => unread[u]=true);
+        renderContacts();
     }
 
-    function updateUsers(users) {
-        usersList.innerHTML = "";
-        users.forEach(user => {
-            const li = document.createElement("li");
-            li.textContent = user;
-            usersList.appendChild(li);
-        });
+    if(d.type === "contacts"){
+        contactsList = d.contacts;
+        renderContacts();
     }
 
-    function sendMessage() {
-        const input = document.getElementById("message");
-        if (!input.value) return;
-
-        ws.send(JSON.stringify({
-            message: input.value
-        }));
-
-        input.value = "";
+    if(d.type === "history"){
+        messages.innerHTML="";
+        d.messages.forEach(m=>addMsg(m[0]+": "+m[1]));
+        unread[current]=false;
+        renderContacts();
     }
 
-    document.getElementById("message").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") sendMessage();
+    if(d.type === "private"){
+        if(d.from === current){
+            addMsg(d.from+": "+d.message);
+        } else {
+            unread[d.from] = true;
+            renderContacts();
+        }
+    }
+};
+
+function renderContacts(){
+    contacts.innerHTML="";
+    contactsList.forEach(u=>{
+        const div=document.createElement("div");
+        div.className="contact";
+        div.innerHTML = `<span>${u}</span><span class="${unread[u]?"unread":""}">${unread[u]?"●":""}</span>`;
+        div.onclick=()=>select(u);
+        contacts.appendChild(div);
     });
+}
+
+function select(u){
+    current=u;
+    ws.send(JSON.stringify({type:"load_history", username:u}));
+}
+
+function send(){
+    if(!current || !msg.value) return;
+    ws.send(JSON.stringify({type:"private", to:current, message:msg.value}));
+    addMsg("Me: "+msg.value);
+    msg.value="";
+}
+
+function addMsg(t){
+    const d=document.createElement("div");
+    d.textContent=t;
+    messages.appendChild(d);
+    messages.scrollTop=messages.scrollHeight;
+}
+
+msg.addEventListener("keydown",e=>{ if(e.key==="Enter") send(); });
+newContact.addEventListener("keydown",e=>{
+    if(e.key==="Enter"){
+        ws.send(JSON.stringify({type:"add_contact", username:newContact.value}));
+        newContact.value="";
+    }
+});
 </script>
 
 </body>
