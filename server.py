@@ -4,9 +4,9 @@ import json
 import sqlite3
 from datetime import datetime
 
-clients = {}  # websocket -> {"username": str, "room": str}
+clients = {}
 
-# --- БАЗА ДАННЫХ ---
+
 conn = sqlite3.connect("chat.db")
 cursor = conn.cursor()
 
@@ -63,12 +63,8 @@ async def send_user_list(room):
         "users": users
     })
 
-
-# --- ОСНОВНОЙ ХЕНДЛЕР ---
-
 async def handler(websocket):
     try:
-        # первое сообщение: username + room
         data = json.loads(await websocket.recv())
 
         username = data.get("username", "Anonymous")
@@ -81,14 +77,12 @@ async def handler(websocket):
 
         print(f"{username} joined {room}")
 
-        # отправка истории
         history = get_history(room)
         await websocket.send(json.dumps({
             "type": "history",
             "messages": history
         }))
 
-        # уведомление
         await broadcast(room, {
             "type": "system",
             "message": f"{username} joined the room"
