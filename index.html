@@ -50,7 +50,7 @@ input { flex:1; padding:10px; border:none; border-radius:5px; }
   }
 
   input {
-    font-size: 16px;
+    font-size: 16px; /* предотвращает zoom на iOS */
   }
 }
 </style>
@@ -74,7 +74,7 @@ input { flex:1; padding:10px; border:none; border-radius:5px; }
 
 <script>
 const username = prompt("Username:");
-const ws = new WebSocket("ws://192.168.1.106:8765");
+const ws = new WebSocket("ws://192.168.1.104:8765");
 
 let current = null;
 let contactsList = [];
@@ -154,3 +154,4 @@ newContact.addEventListener("keydown",e=>{
 
 </body>
 </html>
+
