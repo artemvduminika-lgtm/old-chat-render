@@ -2,156 +2,165 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Messenger</title>
 <style>
-body { margin:0; font-family:sans-serif; background:#36393f; color:white; }
-.container { display:flex; height:100vh; }
-.sidebar { width:250px; background:#2f3136; padding:10px; }
-.contact { padding:10px; cursor:pointer; border-radius:5px; display:flex; justify-content:space-between; }
-.contact:hover { background:#40444b; }
-.unread { color:#43b581; }
-.chat { flex:1; display:flex; flex-direction:column; }
-.messages { flex:1; padding:10px; overflow:auto; }
-.input { display:flex; padding:10px; background:#40444b; }
-input { flex:1; padding:10px; border:none; border-radius:5px; }
-
-
-@media (max-width: 700px) {
-  .container { flex-direction: column; }
-
-  .sidebar {
-    width: 100%;
-    height: 120px;
-    overflow-x: auto;
-    display: flex;
-    gap: 10px;
-  }
-
-  .contact {
-    min-width: 120px;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .chat {
-    flex: 1;
-  }
-
-  .messages {
-    height: calc(100vh - 200px);
-  }
-
-  .input {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    width: 100%;
-  }
-
-  input {
-    font-size: 16px; /* предотвращает zoom на iOS */
-  }
-}
+body{margin:0;background:#36393f;color:white;font-family:sans-serif}
+#app{display:none;height:100vh;display:flex}
+#sidebar{width:260px;background:#2f3136}
+.contact{padding:10px;margin:5px;border-radius:5px;cursor:pointer;display:flex;justify-content:space-between}
+.active{background:#5865f2}
+.online{width:8px;height:8px;border-radius:50%;background:#3ba55d}
+.unread{width:8px;height:8px;border-radius:50%;background:red}
+#chat{flex:1;display:flex;flex-direction:column}
+#messages{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column}
+.msg{margin:5px;padding:8px;border-radius:8px;max-width:60%}
+.me{margin-left:auto;background:#5865f2}
+.other{margin-right:auto;background:#40444b}
+.time{font-size:10px;opacity:0.6}
 </style>
 </head>
 <body>
 
-<div class="container">
-<div class="sidebar">
-<h3>Contacts</h3>
-<div id="contacts"></div>
-<input id="newContact" placeholder="Add" />
+<div id="auth">
+<input id="user" placeholder="username">
+<input id="pass" placeholder="password">
+<button onclick="login()">Login</button>
+<button onclick="register()">Register</button>
 </div>
 
-<div class="chat">
-<div id="messages" class="messages"></div>
-<div class="input">
-<input id="msg" placeholder="Message" />
+<div id="app">
+<div id="sidebar">
+<div id="contacts"></div>
+<input id="newContact" placeholder="Add user">
+<button onclick="addContact()">+</button>
 </div>
+
+<div id="chat">
+<div id="messages"></div>
+<input id="text">
+<button onclick="send()">Send</button>
 </div>
 </div>
 
 <script>
-const username = prompt("Username:");
-const ws = new WebSocket("ws://94.29.124.235:8765");
+const ws=new WebSocket("ws://192.168.31.72:8765");
+const contactsDiv=document.getElementById("contacts");
 
-let current = null;
-let contactsList = [];
-let unread = {};
+let contacts=[],current=null,online=[],unread={},me="";
 
-ws.onopen = ()=> ws.send(JSON.stringify({username}));
+function login(){ws.send(JSON.stringify({type:"login",username:user.value,password:pass.value}))}
+function register(){ws.send(JSON.stringify({type:"register",username:user.value,password:pass.value}))}
 
-ws.onmessage = e => {
-    const d = JSON.parse(e.data);
+ws.onmessage=e=>{
+ let d=JSON.parse(e.data)
 
-    if(d.type === "init"){
-        contactsList = d.contacts;
-        d.unread.forEach(u => unread[u]=true);
-        renderContacts();
-    }
+ if(d.type=="auth"&&d.success){
+  auth.style.display="none";
+  app.style.display="flex";
+  contacts=d.contacts;
+  me=d.username;
+  render();
+ }
 
-    if(d.type === "contacts"){
-        contactsList = d.contacts;
-        renderContacts();
-    }
+ if(d.type=="contacts"){contacts=d.contacts;render();}
+ if(d.type=="online"){online=d.users;render();}
 
-    if(d.type === "history"){
-        messages.innerHTML="";
-        d.messages.forEach(m=>addMsg(m[0]+": "+m[1]));
-        unread[current]=false;
-        renderContacts();
-    }
+ if(d.type=="msg"){
+  if(d.from!==current) unread[d.from]=true;
+  if(d.from===current || d.to===current) add(d);
+  render();
+ }
 
-    if(d.type === "private"){
-        if(d.from === current){
-            addMsg(d.from+": "+d.message);
-        } else {
-            unread[d.from] = true;
-            renderContacts();
-        }
-    }
-};
+ if(d.type=="edit"){
+  let el=document.querySelector(`[data-id='${d.id}']`);
+  if(el) el.querySelector(".text").textContent=d.text;
+ }
 
-function renderContacts(){
-    contacts.innerHTML="";
-    contactsList.forEach(u=>{
-        const div=document.createElement("div");
-        div.className="contact";
-        div.innerHTML = `<span>${u}</span><span class="${unread[u]?"unread":""}">${unread[u]?"●":""}</span>`;
-        div.onclick=()=>select(u);
-        contacts.appendChild(div);
-    });
+ if(d.type=="delete"){
+  let el=document.querySelector(`[data-id='${d.id}']`);
+  if(el) el.remove();
+ }
+
+ if(d.type=="history"){
+  messages.innerHTML="";
+  d.data.forEach(add);
+  unread[current]=false;
+  render();
+ }
 }
 
-function select(u){
+function render(){
+ contactsDiv.innerHTML="";
+ contacts.forEach(u=>{
+  let d=document.createElement("div");
+  d.className="contact"+(u===current?" active":"");
+
+  let name=document.createElement("span");
+  name.textContent=u;
+
+  let right=document.createElement("div");
+
+  if(online.includes(u)){
+    let dot=document.createElement("div");
+    dot.className="online";
+    right.appendChild(dot);
+  }
+
+  if(unread[u]){
+    let dot=document.createElement("div");
+    dot.className="unread";
+    right.appendChild(dot);
+  }
+
+  d.appendChild(name);
+  d.appendChild(right);
+
+  d.onclick=()=>{
     current=u;
-    ws.send(JSON.stringify({type:"load_history", username:u}));
+    ws.send(JSON.stringify({type:"history",user:u}));
+  };
+
+  contactsDiv.appendChild(d);
+ });
+}
+
+function addContact(){
+ ws.send(JSON.stringify({type:"add_contact",username:newContact.value}));
+ newContact.value="";
 }
 
 function send(){
-    if(!current || !msg.value) return;
-    ws.send(JSON.stringify({type:"private", to:current, message:msg.value}));
-    addMsg("Me: "+msg.value);
-    msg.value="";
+ if(!current) return;
+ ws.send(JSON.stringify({type:"send",to:current,text:text.value}));
+ text.value="";
 }
 
-function addMsg(t){
-    const d=document.createElement("div");
-    d.textContent=t;
-    messages.appendChild(d);
-    messages.scrollTop=messages.scrollHeight;
-}
+text.addEventListener("keydown",e=>{if(e.key==="Enter") send();});
+newContact.addEventListener("keydown",e=>{if(e.key==="Enter") addContact();});
 
-msg.addEventListener("keydown",e=>{ if(e.key==="Enter") send(); });
-newContact.addEventListener("keydown",e=>{
-    if(e.key==="Enter"){
-        ws.send(JSON.stringify({type:"add_contact", username:newContact.value}));
-        newContact.value="";
-    }
-});
+function add(m){
+ let d=document.createElement("div");
+ let isMe = (m.from===me);
+ d.className="msg "+(isMe?"me":"other");
+ d.setAttribute("data-id",m.id);
+
+ d.innerHTML=`<div class='text'>${m.text}</div><div class='time'>${m.time}</div>`;
+
+ if(isMe){
+  d.ondblclick=()=>{
+    let t=prompt("Edit:",m.text);
+    if(t) ws.send(JSON.stringify({type:"edit",id:m.id,text:t}));
+  };
+
+  d.oncontextmenu=(e)=>{
+    e.preventDefault();
+    if(confirm("Delete?")) ws.send(JSON.stringify({type:"delete",id:m.id}));
+  };
+ }
+
+ messages.appendChild(d);
+ messages.scrollTop=messages.scrollHeight;
+}
 </script>
 
 </body>
 </html>
-
