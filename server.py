@@ -1,150 +1,190 @@
-import asyncio
-import websockets
-import json
-import sqlite3
+# ================= SERVER (server.py) =================
+import asyncio, websockets, json, sqlite3, uuid
 from datetime import datetime
-import uuid
 
 clients = {}
 
 conn = sqlite3.connect("chat.db")
-cursor = conn.cursor()
+c = conn.cursor()
 
-cursor.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE)")
-cursor.execute("CREATE TABLE IF NOT EXISTS contacts (user_id TEXT, contact_id TEXT)")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS private_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender TEXT,
-    receiver TEXT,
-    message TEXT,
-    timestamp TEXT
+c.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE, password TEXT)")
+c.execute("CREATE TABLE IF NOT EXISTS contacts (user_id TEXT, contact_id TEXT)")
+c.execute("""
+CREATE TABLE IF NOT EXISTS messages (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ sender TEXT,
+ receiver TEXT,
+ text TEXT,
+ time TEXT
 )
 """)
 conn.commit()
 
 # --- HELPERS ---
-
-def get_or_create_user(username):
-    cursor.execute("SELECT id FROM users WHERE username=?", (username,))
-    row = cursor.fetchone()
-    if row: return row[0]
-
-    uid = str(uuid.uuid4())
-    cursor.execute("INSERT INTO users VALUES (?, ?)", (uid, username))
-    conn.commit()
-    return uid
+def get_user(username):
+    c.execute("SELECT id FROM users WHERE username=?", (username,))
+    r = c.fetchone()
+    return r[0] if r else None
 
 
-def get_username(user_id):
-    cursor.execute("SELECT username FROM users WHERE id=?", (user_id,))
-    r = cursor.fetchone()
+def get_username(uid):
+    c.execute("SELECT username FROM users WHERE id=?", (uid,))
+    r = c.fetchone()
     return r[0] if r else "unknown"
 
 
-def get_contacts(user_id):
-    cursor.execute("""
+def get_contacts(uid):
+    c.execute("""
     SELECT u.username FROM contacts c
     JOIN users u ON c.contact_id = u.id
     WHERE c.user_id=?
-    """, (user_id,))
-    return [r[0] for r in cursor.fetchall()]
+    """, (uid,))
+    return [r[0] for r in c.fetchall()]
 
 
-def add_contact(user_id, contact_id):
-    cursor.execute("SELECT 1 FROM contacts WHERE user_id=? AND contact_id=?", (user_id, contact_id))
-    if cursor.fetchone(): return
-    cursor.execute("INSERT INTO contacts VALUES (?, ?)", (user_id, contact_id))
+def add_contact(a, b):
+    c.execute("INSERT OR IGNORE INTO contacts VALUES (?, ?)", (a, b))
     conn.commit()
 
 
-def save_private(s, r, m):
-    cursor.execute("INSERT INTO private_messages (sender, receiver, message, timestamp) VALUES (?, ?, ?, ?)",
-                   (s, r, m, datetime.now().isoformat()))
+def save_msg(s, r, t):
+    time = datetime.now().strftime("%H:%M")
+    c.execute("INSERT INTO messages (sender,receiver,text,time) VALUES (?,?,?,?)",
+              (s, r, t, time))
     conn.commit()
+    return c.lastrowid, time
+
+
+def edit_msg(mid, uid, text):
+    c.execute("SELECT sender FROM messages WHERE id=?", (mid,))
+    r = c.fetchone()
+    if r and r[0] == uid:
+        c.execute("UPDATE messages SET text=? WHERE id=?", (text, mid))
+        conn.commit()
+        return True
+    return False
+
+
+def delete_msg(mid, uid):
+    c.execute("SELECT sender FROM messages WHERE id=?", (mid,))
+    r = c.fetchone()
+    if r and r[0] == uid:
+        c.execute("DELETE FROM messages WHERE id=?", (mid,))
+        conn.commit()
+        return True
+    return False
 
 
 def get_history(a, b):
-    cursor.execute("""
-    SELECT sender, message FROM private_messages
-    WHERE (sender=? AND receiver=?) OR (sender=? AND receiver=?)
-    ORDER BY id
-    """, (a, b, b, a))
-    rows = cursor.fetchall()
-    return [(get_username(r[0]), r[1]) for r in rows]
-
-
-def get_unread_contacts(user_id):
-    # very simple: who sent last messages
-    cursor.execute("""
-    SELECT DISTINCT sender FROM private_messages
-    WHERE receiver=?
-    ORDER BY id DESC
-    LIMIT 20
-    """, (user_id,))
-    return [get_username(r[0]) for r in cursor.fetchall()]
-
+    c.execute("""
+    SELECT id,sender,receiver,text,time FROM messages
+    WHERE (sender=? AND receiver=?) OR (sender=? AND receiver=?) ORDER BY id
+    """, (a,b,b,a))
+    rows = c.fetchall()
+    return [{
+        "id":r[0],
+        "from":get_username(r[1]),
+        "to":get_username(r[2]),
+        "text":r[3],
+        "time":r[4]
+    } for r in rows]
 
 async def send_to(username, data):
     for ws, info in clients.items():
         if info["username"] == username:
             await ws.send(json.dumps(data))
 
+async def broadcast_online():
+    online = [info["username"] for info in clients.values()]
+    for ws in clients:
+        await ws.send(json.dumps({"type":"online","users":online}))
 
 # --- HANDLER ---
-
 async def handler(ws):
-    data = json.loads(await ws.recv())
-    username = data["username"]
-    uid = get_or_create_user(username)
-
-    clients[ws] = {"username": username, "id": uid}
-
-    await ws.send(json.dumps({
-        "type": "init",
-        "contacts": get_contacts(uid),
-        "unread": get_unread_contacts(uid)
-    }))
-
     try:
-        async for msg in ws:
-            data = json.loads(msg)
+        async for raw in ws:
+            data = json.loads(raw)
 
-            if data["type"] == "add_contact":
-                cursor.execute("SELECT id FROM users WHERE username=?", (data["username"],))
-                r = cursor.fetchone()
+            if data["type"] == "register":
+                try:
+                    uid = str(uuid.uuid4())
+                    c.execute("INSERT INTO users VALUES (?,?,?)", (uid, data["username"], data["password"]))
+                    conn.commit()
+                    await ws.send(json.dumps({"type":"ok"}))
+                except:
+                    await ws.send(json.dumps({"type":"error"}))
+
+            elif data["type"] == "login":
+                c.execute("SELECT id FROM users WHERE username=? AND password=?",
+                          (data["username"], data["password"]))
+                r = c.fetchone()
+
                 if r:
-                    add_contact(uid, r[0])
-                    await ws.send(json.dumps({"type": "contacts", "contacts": get_contacts(uid)}))
+                    clients[ws] = {"id": r[0], "username": data["username"]}
+                    await ws.send(json.dumps({
+                        "type":"auth",
+                        "success":True,
+                        "contacts": get_contacts(r[0]),
+                        "username": data["username"]
+                    }))
+                    await broadcast_online()
+                else:
+                    await ws.send(json.dumps({"type":"auth","success":False}))
 
-            elif data["type"] == "load_history":
-                cursor.execute("SELECT id FROM users WHERE username=?", (data["username"],))
-                r = cursor.fetchone()
-                if r:
-                    await ws.send(json.dumps({"type": "history", "messages": get_history(uid, r[0])}))
+            elif data["type"] == "add_contact":
+                uid = clients[ws]["id"]
+                other = get_user(data["username"])
+                if other:
+                    add_contact(uid, other)
+                    await ws.send(json.dumps({
+                        "type":"contacts",
+                        "contacts": get_contacts(uid)
+                    }))
 
-            elif data["type"] == "private":
-                to = data["to"]
-                text = data["message"]
+            elif data["type"] == "history":
+                uid = clients[ws]["id"]
+                other = get_user(data["user"])
+                await ws.send(json.dumps({"type":"history","data":get_history(uid,other)}))
 
-                cursor.execute("SELECT id FROM users WHERE username=?", (to,))
-                r = cursor.fetchone()
-                if r:
-                    save_private(uid, r[0], text)
+            elif data["type"] == "send":
+                uid = clients[ws]["id"]
+                other = get_user(data["to"])
 
-                    await send_to(to, {
-                        "type": "private",
-                        "from": username,
-                        "message": text
-                    })
+                mid, time = save_msg(uid, other, data["text"])
+
+                payload = {
+                    "type":"msg",
+                    "id":mid,
+                    "from":clients[ws]["username"],
+                    "to":data["to"],
+                    "text":data["text"],
+                    "time":time
+                }
+
+                await send_to(data["to"], payload)
+                await ws.send(json.dumps(payload))
+
+            elif data["type"] == "edit":
+                uid = clients[ws]["id"]
+                if edit_msg(data["id"], uid, data["text"]):
+                    await ws.send(json.dumps({"type":"edit","id":data["id"],"text":data["text"]}))
+
+            elif data["type"] == "delete":
+                uid = clients[ws]["id"]
+                if delete_msg(data["id"], uid):
+                    await ws.send(json.dumps({"type":"delete","id":data["id"]}))
 
     finally:
-        del clients[ws]
-
+        if ws in clients:
+            del clients[ws]
+            await broadcast_online()
 
 async def main():
-    async with websockets.serve(handler, "192.168.1.104", 8765):
-        print("Running...")
+    async with websockets.serve(handler, "192.168.31.72", 8765):
+        print("Server running")
         await asyncio.Future()
 
 asyncio.run(main())
+
+
+# ================= CLIENT (index.html) =================
